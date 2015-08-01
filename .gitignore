@@ -1,0 +1,17 @@
+# Metadata
+.DS_Store
+*.swp
+*.swo
+
+# Generated files
+*.gem
+html
+
+# Compiled files
+tmp
+*.o
+build/lib/*
+build/bin/*
+
+# Xcode userdata
+xcuserdata
