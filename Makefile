@@ -11,10 +11,7 @@ override LDFLAGS := $(LDFLAGS)
 INCLUDES = -Iinclude -I/usr/include/ruby-2.2.0 -I/usr/include/ruby-2.2.0/x86_64-linux -I/usr/include/readline
 LIBS = -lm -lruby -lreadline
 
-LIBINITRB_SRCS = $(shell find src -type f -name '*.c')
-LIBINITRB_OBJS = $(LIBINITRB_SRCS:.c=.o)
-
-INITRB_SRCS = $(shell find init -type f -name '*.c')
+INITRB_SRCS = $(shell find src -type f -name '*.c')
 INITRB_OBJS = $(INITRB_SRCS:.c=.o)
 
 # Export variables for subprocesses
@@ -32,21 +29,15 @@ else
 endif
 
 # Define the executable file
-LIBINITRB = build/lib/libinitrb$(DL_EXT)
 INITRB = build/bin/initrb$(BIN_EXT)
 
 # Define `make all`, `make tests`, and `make test`.
-all: $(LIBINITRB) $(INITRB)
-init: $(LIBINITRB) $(INITRB)
+all: $(INITRB)
+initrb: $(INITRB)
 .PHONY: clean
 
-# Define the libinitrb target
-$(LIBINITRB): $(LIBINITRB_OBJS)
-	@echo "LD $(LIBINITRB)"
-	@$(CC) $(CFLAGS) $(LIBINITRB_CFLAGS) -shared $(INCLUDES) -o $(LIBINITRB) $(LIBINITRB_OBJS) $(LDFLAGS) $(LIBS)
-
 # Define the libinitrb-test target
-$(INITRB): LDFLAGS += -Lbuild/lib -lm -linitrb
+$(INITRB): LDFLAGS += -Lbuild/lib
 $(INITRB): $(LIBINITRB) $(INITRB_OBJS)
 	@echo "LD $(INITRB)"
 	@$(CC) $(CFLAGS) $(INITRB_CFLAGS) $(INCLUDES) -o $(INITRB) $(INITRB_OBJS) $(LDFLAGS) $(LIBS)
@@ -58,7 +49,7 @@ $(INITRB): $(LIBINITRB) $(INITRB_OBJS)
 
 # Rule for cleaning build files
 clean:
-	@echo "RM $(LIBINITRB) $(INITRB)"
-	@rm -f $(LIBINITRB) $(INITRB)
+	@echo "RM $(INITRB)"
+	@rm -f $(INITRB)
 	@echo "RM *.o"
-	@find src init -name '*.o' -exec rm -f {} \;
+	@find src -name '*.o' -exec rm -f {} \;
