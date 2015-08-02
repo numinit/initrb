@@ -7,26 +7,17 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 
-#define INITRB_SCRIPT "/etc/init.rb"
-
 static void initrb_reap(int signal) {
     assert(signal == SIGCHLD);
     while (waitpid(-1, NULL, WNOHANG) > 0);
 }
 
 static VALUE initrb_interpreter_boot(VALUE file) {
-    int exc = 0;
-    rb_load_protect(file, Qfalse, &exc);
-    if (exc) {
-        // Caught by the rescue clause
-        rb_jump_tag(exc);
-    } else {
-        // Script exited
-        return INT2FIX(EXIT_SUCCESS);
-    }
+    rb_load(file, Qfalse);
+    return Qtrue;
 }
 
-static VALUE initrb_interpreter_eval_impl(VALUE args) {
+static VALUE initrb_interpreter_eval(VALUE args) {
     Check_Type(args, T_ARRAY);
     VALUE str = rb_ary_entry(args, 0);
     VALUE binding = rb_ary_entry(args, 1);
@@ -35,51 +26,26 @@ static VALUE initrb_interpreter_eval_impl(VALUE args) {
     return rb_funcall(rb_mKernel, rb_intern("eval"), 4, str, binding, filename, line);
 }
 
-static VALUE initrb_interpreter_eval(VALUE args) {
-    int exc = 0;
-    VALUE ret = rb_protect(initrb_interpreter_eval_impl, args, &exc);
-    if (exc) {
-        rb_jump_tag(exc);
-    } else {
-        return ret;
-    }
-}
-
-static VALUE initrb_interpreter_inspect_impl(VALUE obj) {
-    return rb_funcallv_public(obj, rb_intern("inspect"), 0, NULL);
-}
-
 static VALUE initrb_interpreter_inspect(VALUE obj) {
-    int exc = 0;
-    VALUE ret = rb_protect(initrb_interpreter_inspect_impl, obj, &exc);
-    if (exc) {
-        rb_jump_tag(exc);
-    } else {
-        return ret;
-    }
+    return rb_funcallv_public(obj, rb_intern("inspect"), 0, NULL);
 }
 
 static VALUE initrb_interpreter_begin(VALUE file) {
     /** `file' may be a symlink or a relative path, expand it and dereference all symlinks **/
     VALUE real_name = rb_funcall(rb_cFile, rb_intern("realpath"), 1, file);
     VALUE dir = rb_file_dirname(real_name);
-    VALUE ret;
-    int exc = 0;
 
     /** Add the file's directory to the library search path **/
     rb_ary_unshift(rb_gv_get(":"), dir);
 
     /** Run the interpreter */
-    ret = rb_protect(initrb_interpreter_boot, real_name, &exc);
-    if (exc) {
-        rb_jump_tag(exc);
-    }
-
-    return ret;
+    return initrb_interpreter_boot(real_name);
 }
 
 static VALUE initrb_interpreter_print_exception(VALUE exception) {
-    VALUE arr = rb_ary_new3(3, rb_obj_as_string(rb_obj_class(exception)), rb_obj_as_string(exception), rb_ary_join(rb_funcall(exception, rb_intern("backtrace"), 0), rb_str_new_cstr("\n\tfrom ")));
+    VALUE backtrace = rb_funcall(exception, rb_intern("backtrace"), 0);
+    VALUE arr = rb_ary_new3(2, rb_obj_as_string(rb_obj_class(exception)), rb_obj_as_string(exception));
+    rb_ary_push(arr, RARRAY_LENINT(backtrace) == 0 ? rb_str_new_cstr("(initrb)") : rb_ary_join(backtrace, rb_str_new_cstr("\n\tfrom ")));
     return rb_funcall(rb_stderr, rb_intern("puts"), 1, rb_str_format(RARRAY_LENINT(arr), RARRAY_PTR(arr), rb_str_new_cstr("%s: %s\nfrom %s")));
 }
 
@@ -88,20 +54,20 @@ static VALUE initrb_interpreter_print_result(VALUE result) {
     return rb_funcall(rb_stdout, rb_intern("puts"), 1, rb_str_format(RARRAY_LENINT(arr), RARRAY_PTR(arr), rb_str_new_cstr("=> %s")));
 }
 
-static VALUE initrb_interpreter_rescue(VALUE args, VALUE exception) {
-    initrb_interpreter_print_exception(exception);
-    return Qundef;
-}
-
-static VALUE initrb_interpreter_rescue_wrapper(initrb_ruby_fn_t begin, VALUE args) {
-    return rb_rescue(begin, args, initrb_interpreter_rescue, args);
+static VALUE initrb_interpreter_protect(initrb_ruby_fn_t fn, VALUE args) {
+    int exc = 0;
+    VALUE ret = rb_protect(fn, args, &exc);
+    if (exc != 0) {
+        initrb_interpreter_print_exception(rb_errinfo());
+        return Qundef;
+    }
+    return ret;
 }
 
 static void initrb_repl() {
     char prompt[128];
     int idx = 0;
 
-    printf("*** DROPPING YOU INTO A REPL ***\n\n");
     while (true) {
         VALUE arr, result, inspected;
         char *line;
@@ -114,14 +80,9 @@ static void initrb_repl() {
         } else {
             // Evaluate the code
             arr = rb_ary_new3(4, rb_str_buf_new_cstr(line), rb_const_get(rb_cObject, rb_intern("TOPLEVEL_BINDING")), rb_str_buf_new_cstr("(initrb)"), INT2FIX(idx));
-            result = initrb_interpreter_rescue_wrapper(initrb_interpreter_eval, arr);
-            if (result == Qundef) {
+            if ((result = initrb_interpreter_protect(initrb_interpreter_eval, arr)) == Qundef) {
                 continue;
-            }
-
-            // Inspect the result
-            inspected = initrb_interpreter_rescue_wrapper(initrb_interpreter_inspect, result);
-            if (inspected == Qundef) {
+            } else if ((inspected = initrb_interpreter_protect(initrb_interpreter_inspect, result)) == Qundef) {
                 continue;
             }
 
@@ -137,10 +98,9 @@ static void initrb_repl() {
 static int initrb_boot(int argc, char **argv) {
     int ret = 0;
     while (true) {
-        ret = initrb_interpreter_rescue_wrapper(initrb_interpreter_begin, rb_str_buf_new_cstr(argc > 1 ? argv[argc - 1] : INITRB_SCRIPT));
+        ret = initrb_interpreter_protect(initrb_interpreter_begin, rb_str_buf_new_cstr(argc > 1 ? argv[argc - 1] : INITRB_SCRIPT));
         if (ret != Qundef) {
             // Exit gracefully
-            initrb_repl();
             break;
         } else {
             // Internal error, drop into the REPL
@@ -196,13 +156,13 @@ int main(int argc, char **argv) {
         {.signal = SIGUSR1, .handler = SIG_IGN}
     };
 
-    printf("initrb loading\n");
+    printf("initrb %s loading\n", INITRB_VERSION);
 
     // Initial setup
-    /*if (getpid() != 1 || geteuid() != 0) {
+    if (getpid() != 1 || geteuid() != 0) {
         fprintf(stderr, "You must run this as root using PID 1.\n");
         return EXIT_FAILURE;
-    } else */if (chdir("/") != 0) {
+    } else if (chdir("/") != 0) {
         fprintf(stderr, "chdir failure\n");
         return EXIT_FAILURE;
     } else if (setlocale(LC_ALL, "") == NULL) {
